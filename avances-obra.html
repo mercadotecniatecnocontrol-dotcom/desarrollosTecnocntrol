@@ -113,6 +113,19 @@ td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
 td.n{text-align:right;white-space:nowrap}
 td .code{font-weight:700;color:var(--navy)}
 tr.tot td{font-weight:700;background:#f6f7fb}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px}
+.kpis div{background:#f6f7fb;border-radius:9px;padding:10px}
+.kpis small{display:block;color:var(--mute);font-size:12.5px}
+.kpis b{display:block;font:700 24px "Barlow Condensed",Barlow,sans-serif;color:var(--navy)}
+.kpis span{font-size:12.5px;color:var(--mute)}
+.kpis .bad b{color:var(--red)}.kpis .good b{color:var(--ok)}
+.pp{padding:10px 0;border-top:1px solid var(--line)}
+.pn{font-size:14px;display:flex;gap:6px;align-items:baseline}.pn .code{font-weight:700;color:var(--navy)}
+.pn .pi{margin-left:auto;color:var(--mute);font-size:13px;white-space:nowrap}
+.bar{height:8px;background:#eceff6;border-radius:4px;margin-top:5px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:4px}
+.bar .p{background:#9aa6cc}.bar .e{background:var(--ok)}.bar .e.bad{background:var(--red)}
+.pl{display:flex;justify-content:space-between;font-size:12.5px;color:var(--mute);margin-top:3px}
 .warn{background:#fff7e0;border:1px solid #f0d58a;border-radius:9px;padding:10px 12px;font-size:14px}
 .toast{position:fixed;left:50%;bottom:calc(var(--nav) + var(--sab) + 80px);transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 18px;border-radius:10px;font-size:15px;display:none;z-index:40;max-width:90vw;text-align:center}
 @media (min-width:900px){nav{left:50%;right:auto;transform:translateX(-50%);width:680px;border:1px solid var(--line);border-bottom:0;border-radius:14px 14px 0 0}}
@@ -182,7 +195,12 @@ tr.tot td{font-weight:700;background:#f6f7fb}
 
 <!-- ESTIMACIÓN -->
 <section id="s-est">
-  <h2>Resumen para estimación</h2>
+  <h2>Avance contra programa</h2>
+  <div class="card">
+    <label for="pc" style="margin-top:0">Fecha de corte</label><input type="date" id="pc">
+    <div id="prog" style="margin-top:12px"></div>
+  </div>
+  <h2 style="margin-top:20px">Resumen para estimación</h2>
   <p class="help">Conceptos con evidencia en el rango de semanas, con precio unitario del catálogo. Uso interno; no va en el reporte a Winstar.</p>
   <div class="two">
     <div><label for="e1" style="margin-top:0">Desde</label><select id="e1"></select></div>
@@ -197,10 +215,10 @@ tr.tot td{font-weight:700;background:#f6f7fb}
   <h2>Obra</h2>
   <div class="card">
     <div class="step"><i>
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 15V3M7 8l5-5 5 5M4 15v6h16v-6"/></svg></i>Catálogo de conceptos</div>
-    <p class="help">Excel de estimación de la obra (cuerpo de estimación y adicionales).</p>
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 15V3M7 8l5-5 5 5M4 15v6h16v-6"/></svg></i>Catálogo y programa</div>
+    <p class="help">Excel de estimación de la obra (catálogo de conceptos) y Excel del programa de trabajo y pagos. Puedes cargar uno o ambos.</p>
     <input type="file" id="fx" accept=".xlsx,.xls" hidden>
-    <button class="btn" id="bx">Cargar Excel del catálogo</button>
+    <button class="btn" id="bx">Cargar Excel</button>
     <div class="stat" id="catstat">Sin catálogo</div>
   </div>
   <div class="card">
@@ -305,11 +323,73 @@ function parseWB(wb){
       out.push({c,n:String(n).replace(/\s+/g,' ').trim(),u:cU>=0&&r[cU]?String(r[cU]).trim():'',q:l===1?null:q,pu,l});
     }
   });
+  if(!out.length)parseNivel(wb,out,seen);
   // partidas de primer nivel que faltan en el archivo
   const tops=new Set(out.map(x=>topOf(x.c)));
   tops.forEach(t=>{if(!seen.has(t))out.push({c:t,n:'PARTIDA '+t,u:'',q:null,pu:null,l:1});});
-  return {cat:out,info};
+  return {cat:out,info,prog:parseProg(wb)};
 }
+
+/* catálogo con columna NIVEL (Nivel 3/4/5, Concepto, Equipo) */
+function parseNivel(wb,out,seen){
+  wb.SheetNames.forEach(name=>{
+    if(out.length)return;
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    let hi=-1,c={};
+    for(let i=0;i<Math.min(rows.length,30);i++){const r=(rows[i]||[]).map(norm);
+      const a=r.indexOf('NIVEL'),b=r.indexOf('CLAVE');
+      if(a>=0&&b>=0){hi=i;c={niv:a,cl:b,co:r.findIndex(v=>/^CONCEPTO/.test(v)),u:r.findIndex(v=>/^UNIDAD/.test(v)),q:r.findIndex(v=>/^CANTIDAD/.test(v)),pu:r.findIndex(v=>/^PU\b|PRECIO UNITARIO/.test(v)),t:r.findIndex(v=>v==='TOTAL'||v==='IMPORTE')};break;}}
+    if(hi<0)return;
+    for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]||[];const nv=norm(r[c.niv]);const code=normCode(r[c.cl]);const n=r[c.co];
+      if(!nv||!code||!n||/^NIVEL [12]$/.test(nv))continue;
+      if(seen.has(code))continue;seen.add(code);
+      const leaf=nv==='CONCEPTO'||nv==='EQUIPO';
+      const q=leaf&&typeof r[c.q]==='number'?r[c.q]:null;
+      const pu=leaf&&typeof r[c.pu]==='number'?r[c.pu]:null;
+      const tot=c.t>=0&&typeof r[c.t]==='number'?r[c.t]:null;
+      const it={c:code,n:String(n).replace(/\s+/g,' ').trim(),u:leaf&&r[c.u]?String(r[c.u]).trim():'',q,pu,l:isNumCode(code)?code.split('.').length:2};
+      if(leaf&&tot==null&&q&&pu)it.sinImp=true;
+      if(nv==='EQUIPO')it.eq=true;
+      out.push(it);
+    }
+  });
+}
+
+/* programa de trabajo: % por partida principal y mes */
+function parseProg(wb){
+  for(const name of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    for(let i=0;i<Math.min(rows.length,40);i++){
+      const r=(rows[i]||[]).map(norm);
+      const cc=r.indexOf('CLAVE'),cp=r.findIndex(v=>/^PARTIDA/.test(v)),ci=r.findIndex(v=>/^IMPORTE/.test(v)),ct=r.lastIndexOf('TOTAL');
+      if(cc<0||cp<0||ci<0||ct<=ci+1)continue;
+      const meses=[];for(let k=ci+1;k<ct;k++)meses.push(String(rows[i][k]||'Mes '+(k-ci)).trim());
+      const filas=[];
+      for(let j=i+1;j<rows.length;j++){
+        const x=rows[j]||[];const k=normCode(x[cc]);
+        if(norm(x[cc])==='TOTAL'||!k)break;
+        const pct=meses.map((_,m)=>typeof x[ci+1+m]==='number'?x[ci+1+m]:0);
+        const imp=typeof x[ci]==='number'?x[ci]:0;
+        filas.push({c:k,n:String(x[cp]||'').trim(),imp,pct});
+      }
+      if(!filas.length)continue;
+      let ant=null;
+      wb.SheetNames.forEach(n2=>{XLSX.utils.sheet_to_json(wb.Sheets[n2],{header:1,raw:true,defval:null}).forEach(rr=>{
+        if(!rr)return;const a=rr.findIndex(v=>/^ANTICIPO \(%\)/.test(norm(v)));if(a>=0&&typeof rr[a+1]==='number'&&ant==null)ant=rr[a+1];});});
+      return {meses,filas,ant,hoja:name};
+    }
+  }
+  return null;
+}
+function mesInicio(k){
+  const P=S.prog;const base=S.obra.ini?pd(S.obra.ini):new Date();
+  const idx=P.meses.map(m=>MESES.indexOf(norm(m)));
+  if(idx.some(i=>i<0))return new Date(base.getFullYear(),base.getMonth()+k,1);
+  let y=base.getFullYear();for(let i=1;i<=k;i++)if(idx[i]<idx[i-1])y++;
+  return new Date(y,idx[k],1);
+}
+
 let parents=new Set();
 function isLeaf(x){return x.c!=='AD'&&x.l>1&&!parents.has(x.c);}
 function indexCat(){byCode=new Map(S.cat.map(x=>[x.c,x]));parents=new Set();S.cat.forEach(x=>{if(isNumCode(x.c)){const p=x.c.split('.');for(let i=1;i<p.length;i++)parents.add(p.slice(0,i).join('.'));}});}
@@ -361,20 +441,28 @@ $('fx').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
   try{
     const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
-    const {cat,info}=parseWB(wb);
-    if(!cat.length){toast('No encontré una hoja de estimación con columnas CLAVE y CONCEPTO');return;}
-    S.cat=cat;indexCat();
-    if(info.cli&&!S.obra.cli)S.obra.cli=info.cli;
-    if(info.ubi&&!S.obra.ubi)S.obra.ubi=info.ubi;
+    const {cat,info,prog}=parseWB(wb);
+    if(!cat.length&&!prog){toast('No encontré catálogo (CLAVE/CONCEPTO) ni programa de trabajo en el archivo');return;}
+    const msg=[];
+    if(cat.length){S.cat=cat;indexCat();msg.push('catálogo: '+cat.filter(isLeaf).length+' conceptos');
+      if(info.cli&&!S.obra.cli)S.obra.cli=info.cli;if(info.ubi&&!S.obra.ubi)S.obra.ubi=info.ubi;}
+    if(prog){S.prog=prog;msg.push('programa: '+prog.filas.length+' partidas en '+prog.meses.length+' meses');}
     fillObra();saveSoon();renderCatStat();
-    toast('Catálogo cargado: '+cat.filter(isLeaf).length+' conceptos');
+    toast('Cargado '+msg.join(' y '));
   }catch(err){console.error(err);toast('No se pudo leer el archivo: '+err.message);}
   e.target.value='';
 };
 function renderCatStat(){
   const leaf=S.cat.filter(isLeaf);
-  const tot=leaf.reduce((a,x)=>a+(x.q&&x.pu?x.q*x.pu:0),0);
-  $('catstat').innerHTML=S.cat.length?`<b>${leaf.length}</b> conceptos en <b>${new Set(S.cat.map(x=>topOf(x.c))).size}</b> partidas. Importe de catálogo <b>${money(tot)}</b>`:'Sin catálogo';
+  const tot=leaf.reduce((a,x)=>a+(x.q&&x.pu&&!x.sinImp?x.q*x.pu:0),0);
+  const sin=leaf.filter(x=>x.sinImp);const sinT=sin.reduce((a,x)=>a+x.q*x.pu,0);
+  let h=S.cat.length?`<b>${leaf.length}</b> conceptos en <b>${new Set(S.cat.map(x=>topOf(x.c))).size}</b> partidas. Importe de catálogo <b>${money(tot)}</b>`:'Sin catálogo';
+  if(sin.length){const por={};sin.forEach(x=>{const t=topOf(x.c);por[t]=(por[t]||0)+x.q*x.pu;});
+    h+=`<div class="warn" style="margin-top:10px"><b>${sin.length} conceptos tienen cantidad y P.U. pero sin importe</b> en el Excel (${money(sinT)}), por eso no suman al contrato: `+Object.keys(por).sort(cmpCode).map(t=>esc(topLabel(t))+' '+money(por[t])).join(', ')+'.</div>';}
+  if(S.prog){const P=S.prog;const it=P.filas.reduce((a,f)=>a+f.imp,0);const cero=P.filas.filter(f=>!f.imp);
+    h+=`<div style="margin-top:10px">Programa de trabajo: <b>${P.filas.length}</b> partidas, ${esc(P.meses[0])} a ${esc(P.meses[P.meses.length-1])}, importe programado <b>${money(it)}</b>${P.ant!=null?', anticipo '+Math.round(P.ant*100)+'%':''}.</div>`;
+    if(cero.length)h+=`<div class="warn" style="margin-top:8px">Partidas en el programa con importe $0: ${cero.map(f=>esc(f.c+' '+f.n)).join(', ')}.</div>`;}
+  $('catstat').innerHTML=h;
 }
 function fillObra(){$('o-nom').value=S.obra.nom||'';$('o-cli').value=S.obra.cli||'';$('o-ubi').value=S.obra.ubi||'';$('o-ini').value=S.obra.ini||'';updHead();}
 ['nom','cli','ubi','ini'].forEach(k=>$('o-'+k).addEventListener('input',e=>{S.obra[k]=e.target.value;updHead();saveSoon();}));
@@ -574,6 +662,40 @@ async function genPPTX(w){
   toast('Reporte de la semana '+w+' descargado');
 }
 
+
+/* ---------- programa vs real ---------- */
+function ejecutado(top,hasta,desde){
+  return S.ev.reduce((a,v)=>{if(topOf(v.code)!==top||v.cant==null)return a;if(hasta&&v.fecha>hasta)return a;if(desde&&v.fecha<desde)return a;
+    const x=byCode.get(v.code);return a+(x&&x.pu?v.cant*x.pu:0);},0);
+}
+function fracMes(m,corte){const a=mesInicio(m),b=new Date(a.getFullYear(),a.getMonth()+1,1);return Math.max(0,Math.min(1,(corte.getTime()+DAY-a)/(b-a)));}
+function renderProg(){
+  const box=$('prog');const P=S.prog;
+  if(!P){box.innerHTML='<p class="help" style="margin:0">Carga en Obra el Excel del programa de trabajo para comparar lo programado contra lo ejecutado.</p>';return;}
+  if(!$('pc').value)$('pc').value=today();
+  const cs=$('pc').value,corte=pd(cs);
+  const filas=P.filas.filter(f=>f.imp>0).map(f=>{
+    const prog=f.imp*f.pct.reduce((a,p,m)=>a+p*fracMes(m,corte),0);
+    const ej=ejecutado(f.c,cs);return {...f,prog,ej};});
+  const T=filas.reduce((a,f)=>a+f.imp,0),TP=filas.reduce((a,f)=>a+f.prog,0),TE=filas.reduce((a,f)=>a+f.ej,0);
+  const pc=v=>(T?v/T*100:0).toFixed(1)+'%';const dif=TE-TP;
+  let h=`<div class="kpis"><div><small>Programado al corte</small><b>${pc(TP)}</b><span>${money(TP)}</span></div>
+    <div><small>Ejecutado medido</small><b>${pc(TE)}</b><span>${money(TE)}</span></div>
+    <div class="${dif<0?'bad':'good'}"><small>${dif<0?'Atraso':'Adelanto'}</small><b>${pc(Math.abs(dif))}</b><span>${money(Math.abs(dif))}</span></div></div>`;
+  h+=filas.map(f=>{const p=f.prog/f.imp*100,e=f.ej/f.imp*100;
+    return `<div class="pp"><div class="pn"><span class="code">${esc(f.c)}</span>${esc(f.n)}<span class="pi">${money(f.imp)}</span></div>
+    <div class="bar"><i class="p" style="width:${Math.min(100,p)}%"></i></div>
+    <div class="bar"><i class="${e+0.05<p?'e bad':'e'}" style="width:${Math.min(100,e)}%"></i></div>
+    <div class="pl"><span>Programado ${p.toFixed(1)}%</span><span>Ejecutado ${e.toFixed(1)}%</span></div></div>`;}).join('');
+  const ant=P.ant||0;
+  h+=`<div class="tw"><table><thead><tr><th>Mes</th><th>Programado</th><th>Ejecutado medido</th><th>Amortización anticipo</th><th>Cobro neto programado</th><th>Cobro con IVA 16%</th></tr></thead><tbody>`+
+    P.meses.map((m,k)=>{const a=mesInicio(k),b=new Date(a.getFullYear(),a.getMonth()+1,0);
+      const pr=P.filas.reduce((s,f)=>s+f.imp*f.pct[k],0);const ej=P.filas.reduce((s,f)=>s+ejecutado(f.c,iso(b),iso(a)),0);
+      return `<tr><td>${esc(m)} ${a.getFullYear()}</td><td class="n">${money(pr)}</td><td class="n">${a>corte?'—':money(ej)}</td><td class="n">${money(pr*ant)}</td><td class="n">${money(pr*(1-ant))}</td><td class="n">${money(pr*(1-ant)*1.16)}</td></tr>`;}).join('')+
+    `</tbody></table></div><p class="help" style="margin:8px 0 0">Ejecutado medido = cantidades capturadas en evidencias × P.U. del catálogo. Las evidencias sin cantidad no cuentan aquí.</p>`;
+  box.innerHTML=h;
+}
+
 /* ---------- estimación ---------- */
 function estRows(){
   const a=+$('e1').value,b=+$('e2').value;if(!a||!b)return [];
@@ -584,6 +706,7 @@ function estRows(){
     return {c,n:corto(x.n,140),u:x.u||'',q:parents.has(c)?null:x.q,pu:x.pu,cant,imp:cant!=null&&x.pu!=null?cant*x.pu:null,ev:vs.length};});
 }
 function renderEst(){
+  renderProg();
   fillWeekSel($('e1'),'first');fillWeekSel($('e2'));
   const r=estRows();
   if(!r.length){$('etab').innerHTML='<tr><td class="empty">No hay evidencias en ese rango.</td></tr>';return;}
@@ -593,6 +716,7 @@ function renderEst(){
     `<tr class="tot"><td colspan="6">Importe estimable (sin IVA)${pend?' · '+pend+' conceptos sin cantidad':''}</td><td class="n">${money(tot)}</td><td></td></tr></tbody>`;
 }
 $('e1').onchange=$('e2').onchange=renderEst;
+$('pc').addEventListener('input',renderProg);
 $('bxl').onclick=()=>{
   const r=estRows();if(!r.length){toast('No hay datos en ese rango');return;}
   const aoa=[['Clave','Concepto','Unidad','Cant. contrato','P.U.','Cant. ejecutada','Importe']];
