@@ -66,6 +66,7 @@ textarea{min-height:80px;resize:vertical}
 input:focus,textarea:focus,select:focus,button:focus-visible{outline:2px solid var(--red);outline-offset:1px}
 input:disabled{background:#f3f4f8;color:var(--mute)}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.chart{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:4px -4px 0}.chart svg{display:block;width:100%;height:auto}.chart text{font-family:Barlow,sans-serif}.leg{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mute);margin-top:6px}.leg i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .btn{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--navy);color:#fff;border:0;border-radius:11px;padding:14px 16px;font-weight:700;font-size:16px;cursor:pointer}
 .btn.red{background:var(--red)}.btn.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}.btn.sm{width:auto;padding:9px 14px;font-size:14px}
 .btn:disabled{background:#b8bfd3;cursor:not-allowed;box-shadow:none}
@@ -314,11 +315,29 @@ async function todos(tabla,cols,filtro,orden){
 const urlCache=new Map();
 async function firmar(paths){
   const falta=[...new Set(paths.filter(p=>p&&!urlCache.has(p)))];
-  for(let i=0;i<falta.length;i+=100){const c=await sb();const {data,error}=await c.storage.from(BUCKET).createSignedUrls(falta.slice(i,i+100),60*60*6);
-    if(!error&&data)data.forEach(d=>{if(d.signedUrl)urlCache.set(d.path,d.signedUrl);});}
+  for(let i=0;i<falta.length;i+=100){try{const r=await archivos('leer',falta.slice(i,i+100));
+    (r.items||[]).forEach(d=>{if(d.signedUrl)urlCache.set(d.path,d.signedUrl);});}catch(e){console.warn('firmar',e.message);}}
   return paths.map(p=>urlCache.get(p)||'');
 }
-async function subir(path,blob){const c=await sb();const {error}=await c.storage.from(BUCKET).upload(path,blob,{contentType:blob.type||'image/jpeg',upsert:true});if(error)throw error;return path;}
+/* Storage NO acepta el token de Firebase (su id no es UUID): toda foto pasa por la
+   Edge Function "obras-archivos", que valida el permiso y entrega una URL firmada. */
+async function archivos(accion,paths){
+  if(!auth.currentUser)throw new Error('Sin sesión');
+  const t=await auth.currentUser.getIdToken();
+  const r=await fetch(SUPABASE_URL+'/functions/v1/obras-archivos',{method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+t,'apikey':SUPABASE_KEY},
+    body:JSON.stringify({accion,paths})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||('Error '+r.status+' al '+accion+' fotos'));
+  return j;
+}
+async function subir(path,blob){
+  const r=await archivos('subir',[path]);const it=r.items&&r.items[0];
+  if(!it||!it.signedUrl)throw new Error('No se obtuvo permiso para subir la foto');
+  const up=await fetch(it.signedUrl,{method:'PUT',headers:{'Content-Type':blob.type||'image/jpeg','x-upsert':'true','apikey':SUPABASE_KEY},body:blob});
+  if(!up.ok){let m='';try{m=(await up.json()).message||'';}catch(_){}throw new Error('Error '+up.status+' al subir la foto'+(m?': '+m:''));}
+  return path;
+}
 
 /* ═══════════════ COLA SIN CONEXIÓN (IndexedDB) ═══════════════ */
 let _db=null;
@@ -708,6 +727,43 @@ function vObra(){
   ({resumen:tResumen,semanas:tSemanas,capturar:tCapturar,conceptos:tConceptos,mas:tMas}[S.tab]||tResumen)();
 }
 
+/* ─────────── GRÁFICAS (SVG, sin librerías) ─────────── */
+function graficaAreas(parts,corte,hayProg){
+  const n=parts.length;if(!n)return '';
+  const bw=hayProg?16:26,gap=hayProg?4:0,col=Math.max(46,bw*(hayProg?2:1)+gap+20);
+  const L=34,T=18,H=150,B=30,W=Math.max(320,L+n*col+8),y=v=>T+H-H*Math.max(0,Math.min(100,v))/100;
+  let g='';
+  [0,25,50,75,100].forEach(v=>{g+=`<line x1="${L}" x2="${W-4}" y1="${y(v)}" y2="${y(v)}" stroke="#d9dde8" stroke-width="1"${v?' stroke-dasharray="3 3"':''}/><text x="${L-6}" y="${y(v)+4}" font-size="10" fill="#5d6680" text-anchor="end">${v}%</text>`;});
+  parts.forEach((p,i)=>{
+    const a=avancePartida(p),pp=hayProg?programadoPartida(p,corte):null;
+    const x0=L+i*col+(col-(bw*(pp!=null?2:1)+(pp!=null?gap:0)))/2;
+    const atr=pp!=null&&a+0.05<pp;
+    const hA=Math.max(a>0?2:0,T+H-y(a));
+    g+=`<rect x="${x0}" y="${T+H-hA}" width="${bw}" height="${hA}" rx="3" fill="${atr?'#E7402B':'#1D2E73'}"><title>${esc(p)} real ${pct(a)}</title></rect>`;
+    g+=`<text x="${x0+bw/2}" y="${T+H-hA-4}" font-size="10" font-weight="700" fill="${atr?'#E7402B':'#1D2E73'}" text-anchor="middle">${Math.round(a)}</text>`;
+    if(pp!=null){const hP=T+H-y(pp);g+=`<rect x="${x0+bw+gap}" y="${T+H-hP}" width="${bw}" height="${hP}" rx="3" fill="#aab3cc"><title>${esc(p)} programado ${pct(pp)}</title></rect>`;}
+    g+=`<text x="${L+i*col+col/2}" y="${T+H+16}" font-size="11" font-weight="700" fill="#1b2133" text-anchor="middle">${esc(p==='AD'?'AD':p+'.00')}</text>`;
+  });
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${T+H+B}" style="min-width:${Math.min(W,n*40+40)}px" role="img" aria-label="Cumplimiento por área">${g}</svg></div>
+    <div class="leg"><span><i style="background:#1D2E73"></i>Real</span>${hayProg?'<span><i style="background:#aab3cc"></i>Programado al día</span><span><i style="background:#E7402B"></i>Real con atraso</span>':''}</div>`;
+}
+function graficaSemanas(){
+  if(!S.obra.fecha_inicio)return '';
+  const cur=Math.max(1,semana(today()));const cnt=new Map();
+  S.ev.forEach(e=>{const w=e.semana||semana(e.fecha);if(w>0)cnt.set(w,(cnt.get(w)||0)+1);});
+  const n=Math.max(cur,...cnt.keys());const desde=Math.max(1,n-15);const ws=[];for(let w=desde;w<=n;w++)ws.push(w);
+  const mx=Math.max(1,...ws.map(w=>cnt.get(w)||0));const L=26,T=16,H=110,B=26,col=30,W=Math.max(320,L+ws.length*col+6);
+  const y=v=>T+H-H*v/mx;let g='';
+  [0,mx].forEach(v=>{g+=`<line x1="${L}" x2="${W-4}" y1="${y(v)}" y2="${y(v)}" stroke="#d9dde8"/><text x="${L-5}" y="${y(v)+4}" font-size="10" fill="#5d6680" text-anchor="end">${v}</text>`;});
+  ws.forEach((w,i)=>{const v=cnt.get(w)||0,h=T+H-y(v),x=L+i*col+6;
+    g+=`<g data-w="${w}" style="cursor:pointer"><rect x="${L+i*col}" y="${T}" width="${col}" height="${H+B}" fill="transparent"/>`;
+    if(v)g+=`<rect x="${x}" y="${T+H-h}" width="${col-12}" height="${h}" rx="3" fill="${w===cur?'#E7402B':'#1D2E73'}"/><text x="${x+(col-12)/2}" y="${T+H-h-4}" font-size="10" font-weight="700" fill="#1b2133" text-anchor="middle">${v}</text>`;
+    else g+=`<rect x="${x}" y="${T+H-2}" width="${col-12}" height="2" fill="#E7402B" opacity=".5"/>`;
+    g+=`<text x="${x+(col-12)/2}" y="${T+H+15}" font-size="10" fill="${w===cur?'#E7402B':'#5d6680'}" font-weight="${w===cur?700:400}" text-anchor="middle">${w}</text></g>`;});
+  return `<div class="card"><h3>Evidencias por semana</h3><div class="chart"><svg viewBox="0 0 ${W} ${T+H+B}" role="img" aria-label="Evidencias por semana">${g}</svg></div>
+    <div class="leg"><span><i style="background:#1D2E73"></i>Evidencias subidas</span><span><i style="background:#E7402B"></i>Semana en curso</span><span>Toca una semana para abrirla</span></div></div>`;
+}
+
 /* ─────────── RESUMEN ─────────── */
 function tResumen(){
   if(!S.cat.length){$('view').innerHTML=`<div class="card"><h3>Falta el catálogo</h3><p class="help">Esta obra todavía no tiene catálogo de conceptos. ${puedeAdm()?'Cárgalo desde Más → Catálogo y programa.':'Pide al encargado que lo cargue.'}</p>
@@ -729,6 +785,8 @@ function tResumen(){
       <div class="${solA.length?'bad':''}" id="kSol" style="cursor:pointer"><small>Solicitudes abiertas</small><b>${solA.length}</b></div>
       <div class="${venc.length?'bad':''}" id="kVen" style="cursor:pointer"><small>Conceptos vencidos</small><b>${venc.length}</b></div>
     </div>
+    <div class="card"><h3>Cumplimiento por área</h3>${graficaAreas(parts,corte,hayProg)}</div>
+    ${graficaSemanas()}
     <div class="card"><h3>Avance por área</h3>${parts.map(p=>{const a=avancePartida(p),pp=hayProg?programadoPartida(p,corte):null;
       return `<div class="pp"><div class="pn"><span class="code">${esc(p==='AD'?'AD':p+'.00')}</span>${esc(etiquetaPartida(p).replace(/^\S+\s/,''))}<span class="v">${pct(a)}</span></div>
       <div class="bar"><i class="${pp!=null&&a+0.05<pp?'bad':''}" style="width:${Math.min(100,a)}%"></i></div>
@@ -738,6 +796,7 @@ function tResumen(){
   cargarFotos($('galA'));
   $('kSol').onclick=()=>push(vSolicitudes);$('kVen').onclick=()=>{S.filtroC='vencidos';S.tab='conceptos';reemplazar(vObra);};
   $('view').querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>verConcepto(b.dataset.c));
+  $('view').querySelectorAll('g[data-w]').forEach(b=>b.onclick=()=>{S.semSel=+b.dataset.w;push(vSemana);});
 }
 async function cargarFotos(box){if(!box)return;const fs=[...box.querySelectorAll('[data-p]')];if(!fs.length)return;const urls=await firmar(fs.map(f=>f.dataset.p));fs.forEach((f,i)=>{const im=f.tagName==='IMG'?f:f.querySelector('img');if(im&&urls[i])im.src=urls[i];});}
 
@@ -790,7 +849,7 @@ function pintarEvidencias(box,l){
   cargarFotos(box);
   box.querySelectorAll('.rm').forEach(b=>b.onclick=async()=>{if(!confirm('¿Eliminar esta evidencia? Las fotos también se borran.'))return;
     const e=S.ev.find(x=>x.id===b.dataset.id);
-    try{await q(c=>c.from('obra_evidencias').delete().eq('id',e.id));try{const c=await sb();await c.storage.from(BUCKET).remove(e.fotos||[]);}catch(_){}
+    try{await q(c=>c.from('obra_evidencias').delete().eq('id',e.id));try{if((e.fotos||[]).length)await archivos('borrar',e.fotos);}catch(_){}
       S.ev=S.ev.filter(x=>x.id!==e.id);aplicarLocal(e);toast('Evidencia eliminada');actualizarAvance();pintar();}catch(err){toast('No se pudo eliminar: '+err.message);}});
 }
 
@@ -864,7 +923,8 @@ async function guardarEvidencia(){
     fotos:draft.fotos.map((_,i)=>`${S.obra.id}/ev/${id}_${i+1}.jpg`)};
   const blobs=draft.fotos.map(f=>f.blob);
   try{await enviarEvidencia(fila,blobs);S.ev.push(fila);aplicarLocal(fila);toast('Evidencia guardada');actualizarAvance();}
-  catch(e){console.warn(e);await colaPut({id,fila,blobs,obra:S.obra.nombre,creado:Date.now()});toast('Sin conexión: la evidencia quedó guardada en el teléfono y se enviará sola',5000);}
+  catch(e){console.warn(e);await colaPut({id,fila,blobs,obra:S.obra.nombre,creado:Date.now()});
+    toast(navigator.onLine?'No se pudo enviar ('+(e.message||e)+'). Quedó guardada en este equipo y se reintentará sola.':'Sin conexión: la evidencia quedó guardada en el teléfono y se enviará sola',7000);}
   draft={clave:draft.clave,fotos:[],avance:null};gps=null;tCapturar();window.scrollTo(0,0);
 }
 function aplicarLocal(fila){const c=S.byCode.get(fila.concepto_clave);if(!c)return;
@@ -879,7 +939,8 @@ async function sincronizarCola(){
   if(sincronizando||!navigator.onLine)return;sincronizando=true;
   try{const l=await colaTodo();let ok=0;
     for(const x of l){try{await enviarEvidencia(x.fila,x.blobs);await colaDel(x.id);ok++;if(S.obra&&S.obra.id===x.fila.obra_id&&!S.ev.some(e=>e.id===x.id))S.ev.push(x.fila);}catch(e){console.warn('cola',e.message);break;}}
-    if(ok)toast(ok+' evidencia'+(ok>1?'s':'')+' pendiente'+(ok>1?'s':'')+' enviada'+(ok>1?'s':''));}
+    if(ok){toast(ok+' evidencia'+(ok>1?'s':'')+' pendiente'+(ok>1?'s':'')+' enviada'+(ok>1?'s':''));
+      if(S.obra){try{await cargarDatos();if(pila[pila.length-1]===vObra)pintar();}catch(_){}}}}
   finally{sincronizando=false;pintarPendientes();}
 }
 async function pintarPendientes(){const box=$('pendbox');if(!box)return;const l=await colaTodo();
