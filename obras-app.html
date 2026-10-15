@@ -484,12 +484,27 @@ async function iniciar(){
   pantalla('splash');
   try{
     const email=(auth.currentUser.email||'').toLowerCase();
+    await asegurarRol();
     const yo=await conTiempo(q(c=>c.from('obra_usuarios').select('*').eq('email',email).maybeSingle()),20000,'Supabase no respondió');
-    if(!yo||!yo.activo){mensaje('Tu cuenta no tiene acceso','Tu usuario ('+esc(email)+') todavía no está dado de alta en la app de Obras. Pide a Dirección que te agregue.');return;}
+    if(!yo||!yo.activo){mensaje('Tu cuenta no tiene acceso','Tu usuario ('+esc(email)+') todavía no está dado de alta en la app de Obras. Pide a Dirección que te agregue. Si ya te agregaron, toca Reintentar.',true);return;}
     S.me=yo;S.usuarios.set(yo.email,yo);
     pantalla('app');sincronizarCola();raiz(vObras);
   }catch(e){console.error(e);
     mensaje('No se pudo conectar',esc(e.message||String(e))+'<br><br>Si el problema sigue, avisa a sistemas: puede faltar el permiso de Supabase en tu cuenta.',true);}
+}
+/* Supabase solo reconoce la sesión de Firebase si el token trae role:'authenticated'.
+   Las cuentas creadas después del script inicial no lo traen: aquí se pide a la
+   Edge Function "firebase-rol" que se lo ponga (solo a correos dados de alta) y se renueva el token. */
+async function asegurarRol(){
+  try{
+    const r=await auth.currentUser.getIdTokenResult();
+    if(r.claims&&r.claims.role==='authenticated')return;
+    const res=await conTiempo(fetch(SUPABASE_URL+'/functions/v1/firebase-rol',{method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+r.token,'apikey':SUPABASE_KEY},body:'{}'}),20000,'No respondió la asignación de permisos');
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok){console.warn('firebase-rol',j.error||res.status);return;}
+    if(j.cambio){await auth.currentUser.getIdToken(true);}
+  }catch(e){console.warn('asegurarRol',e.message||e);}
 }
 function mensaje(t,html,reint){
   pantalla('app');barra(false);head(t,'',false);
