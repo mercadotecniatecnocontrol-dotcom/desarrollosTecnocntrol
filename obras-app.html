@@ -400,6 +400,7 @@ function parseWB(wb){
     }
   });
   if(!out.length)parseNivel(wb,out,seen);
+  if(!out.length)parseGenerico(wb,out,seen);
   // partidas de primer nivel que faltan en el archivo
   const tops=new Set(out.map(x=>topOf(x.c)));
   tops.forEach(t=>{if(!seen.has(t))out.push({c:t,n:'PARTIDA '+t,u:'',q:null,pu:null,l:1});});
@@ -429,6 +430,86 @@ function parseNivel(wb,out,seen){
       if(nv==='EQUIPO')it.eq=true;
       out.push(it);
     }
+  });
+}
+
+/* ═══ catálogo "libre": cualquier Excel con columnas tipo Partida/Clave · Descripción/Concepto · Cant. · Unidad · P.U. · Importe ═══
+   Cada cliente entrega el catálogo distinto; aquí se reconocen los encabezados por sinónimos, en cualquier hoja y fila.
+   - Claves guardadas como número (2.1 que en realidad es 2.10, 6.3 que es 6.30) se corrigen por el orden de la lista.
+   - Hojas extra cuya numeración choca con la principal (p. ej. "Estudios o Permisos") entran como partidas nuevas. */
+const SINON={
+  cl:/^(CLAVE|CVE\.?|PARTIDA|NO\.?|NUM\.?|NUMERO|N°|#|ITEM|CODIGO|COD\.?|ID)$/,
+  de:/^(CONCEPTO|CONCEPTOS|DESCRIPCION|DESCRIPCION \/ CATEGORIA|DESCRIPCION DEL CONCEPTO|DESC\.?|ACTIVIDAD|TRABAJO)/,
+  u:/^(UNIDAD|UNI\.?|UND\.?|U\.?M\.?|U\.?|UNID\.?|MEDIDA)$/,
+  q:/^(CANT\.?|CANTIDAD|CANT\. TOTAL|VOLUMEN|VOL\.?)$/,
+  pu:/^(P\.? ?U\.?|PRECIO UNIT\.?|PRECIO UNITARIO|PRECIO|COSTO UNITARIO)$/,
+  t:/^(IMPORTE|SUBTOTAL|TOTAL|MONTO)$/
+};
+function encabezados(rows){
+  for(let i=0;i<Math.min(rows.length,40);i++){
+    const r=(rows[i]||[]).map(norm);const c={};
+    r.forEach((v,k)=>{if(!v)return;for(const key in SINON)if(c[key]==null&&SINON[key].test(v)){c[key]=k;break;}});
+    if(c.de!=null&&(c.cl!=null||c.q!=null))return {hi:i,c};
+  }
+  return null;
+}
+/* "2.1" después de "2.9" es 2.10; "6.3" después de "6.29" es 6.30 */
+function claveSecuencia(v,ult){
+  if(typeof v!=='number')return null;
+  const s=String(v);if(!s.includes('.'))return {top:s,sub:null};
+  const [a,b]=s.split('.');const prev=ult[a]||0;
+  let n=parseInt(b,10);if(b.length===1&&n<=prev)n=n*10;
+  if(n<=prev){let m=parseInt(b,10);while(m<=prev)m*=10;n=m;}
+  ult[a]=n;return {top:a,sub:n};
+}
+function parseGenerico(wb,out,seen){
+  const hojas=[];
+  wb.SheetNames.forEach(name=>{
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:null});
+    const h=encabezados(rows);if(!h)return;
+    const {hi,c}=h;const items=[];let titulo='';const ult={};
+    for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]||[];const dRaw=r[c.de];if(dRaw==null||String(dRaw).trim()==='')continue;
+      const d=String(dRaw).replace(/\s+/g,' ').trim();
+      const q=c.q!=null&&typeof r[c.q]==='number'?r[c.q]:null;
+      const pu=c.pu!=null&&typeof r[c.pu]==='number'?r[c.pu]:null;
+      const t=c.t!=null&&typeof r[c.t]==='number'?r[c.t]:null;
+      const u=c.u!=null&&r[c.u]!=null?String(r[c.u]).trim():'';
+      const raw=c.cl!=null?r[c.cl]:null;
+      if(/^(TOTAL|SUBTOTAL|IVA|GRAN TOTAL)\b/.test(norm(d))&&q==null)continue;
+      let code=null;
+      const sq=claveSecuencia(raw,ult);
+      if(sq)code=sq.sub==null?sq.top:sq.top+'.'+String(sq.sub).padStart(2,'0');
+      else if(raw!=null&&String(raw).trim()!==''){const s=normCode(raw);if(isNumCode(s))code=s;}
+      if(!code&&q==null){if(!items.length&&!titulo)titulo=d;continue;}   // renglón de título
+      items.push({code,txt:raw!=null&&!code?String(raw).trim():'',n:d,u,q,pu,t});
+    }
+    if(items.some(x=>x.q!=null))hojas.push({name,items,titulo});
+  });
+  if(!hojas.length)return;
+  // hoja principal = la que tiene más claves con punto (1.1, 2.3…)
+  const punt=h=>h.items.filter(x=>x.code&&x.code.includes('.')).length;
+  hojas.sort((a,b)=>punt(b)-punt(a));
+  const principal=punt(hojas[0])>0?hojas[0]:null;
+  const usados=new Set();
+  if(principal){
+    principal.items.forEach(x=>{
+      if(!x.code)return;
+      const l=x.code.split('.').length;
+      if(seen.has(x.code))return;seen.add(x.code);usados.add(topOf(x.code));
+      const leaf=x.q!=null;
+      out.push({c:x.code,n:x.n,u:leaf?x.u:'',q:leaf&&l>1?x.q:null,pu:leaf?x.pu:null,l:leaf&&l===1?2:l,...(leaf&&x.t==null&&x.q&&x.pu?{sinImp:true}:{})});
+    });
+  }
+  // las demás hojas: cada una es una partida nueva con sus conceptos numerados en orden
+  let sig=Math.max(0,...[...usados].map(Number).filter(n=>!isNaN(n)))+1;
+  hojas.filter(h=>h!==principal).forEach(h=>{
+    const conc=h.items.filter(x=>x.q!=null);if(!conc.length)return;
+    const top=String(sig++);seen.add(top);
+    out.push({c:top,n:(h.titulo&&h.titulo.length<90?h.titulo:h.name).toUpperCase(),u:'',q:null,pu:null,l:1});
+    conc.forEach((x,k)=>{const cd=top+'.'+String(k+1).padStart(2,'0');seen.add(cd);
+      const ref=x.code||x.txt;
+      out.push({c:cd,n:(ref&&!/^\d+$/.test(ref)?ref+' · ':'')+x.n,u:x.u,q:x.q,pu:x.pu,l:2,...(x.t==null&&x.q&&x.pu?{sinImp:true}:{})});});
   });
 }
 
@@ -745,8 +826,20 @@ function vObra(){
 /* ─────────── GRÁFICAS (SVG, sin librerías) ─────────── */
 /* ─────────── DIBUJO DE LA ESTACIÓN (se colorea según el avance por área) ─────────── */
 function dibujoEstacion(parts,corte,hayProg){
-  const tiene=new Set(parts);
-  const info=p=>{if(!tiene.has(p))return null;const a=avancePartida(p),pp=hayProg?programadoPartida(p,corte):null;return {a:Math.max(0,Math.min(100,a)),pp};};
+  // cada partida se asigna a una zona del dibujo por su NOMBRE (cada cliente numera distinto)
+  const ZONA=[['9',/ANUNCIO|PILON|TOTEM|SENALETICA/],['10',/MUNICIPAL|BANQUETA|VIA PUBLICA/],['8',/BARDA|VENTEO|MURO PERIMETRAL|LIMITE/],
+    ['5',/TANQUE/],['4',/DESPACHO|DISPENSAR|TECHUMBRE|ISLA/],['2',/OFICINA|TIENDA|EDIFICIO|CUARTO|SANITARIO|BANOS|CASETA/],
+    ['6',/ELECTRIC|TIERRAS|LUMINAR|ILUMINAC|ACOMETIDA|SUBESTACION/],['7',/EXTERIOR|JARDIN|AREAS VERDES|REGISTRO|DRENAJE|TRAMPA|PLUVIAL|HIDRAULIC|SANITARI/],
+    ['1',/PLATAFORMA|PAVIMENT|PRELIMINAR|TERRACER|TRAZO|CIRCULACION/]];
+  const porZona={};
+  parts.forEach(p=>{const c=S.byCode.get(p);const nm=norm(c?c.descripcion:'');
+    let z=null;for(const [k,re] of ZONA)if(re.test(nm)){z=k;break;}
+    if(!z&&/^PARTIDA \d+$/.test(nm)&&['1','2','4','5','6','7','8','9','10'].includes(p))z=p;
+    if(z)(porZona[z]=porZona[z]||[]).push(p);});
+  const info=k=>{const l=porZona[k];if(!l)return null;
+    const a=l.reduce((t,p)=>t+avancePartida(p),0)/l.length;
+    const pps=hayProg?l.map(p=>programadoPartida(p,corte)).filter(v=>v!=null):[];
+    return {a:Math.max(0,Math.min(100,a)),pp:pps.length?pps.reduce((t,v)=>t+v,0)/pps.length:null,l};};
   const NOM={'1':'Plataforma general','2':'Oficinas administrativas','4':'Área de despacho','5':'Tanques','6':'Instalación eléctrica','7':'Obra exterior','8':'Barda y muros de venteos','9':'Anuncio independiente','10':'Obras municipales'};
   const GF='#eef0f5',GS='#b9c0d0';
   // cada zona: caja (para el llenado de abajo hacia arriba) + figuras; g=true dibuja la versión "pendiente"
@@ -825,13 +918,13 @@ function dibujoEstacion(parts,corte,hayProg){
   orden.forEach(k=>{const i=info(k);const [x,y]=POS[k];
     const est=!i?'n':i.a>=100?'ok':(i.pp!=null&&i.a+0.05<i.pp)?'bad':i.a>0?'go':'z';
     const bg={ok:'#1f8a4c',bad:'#E7402B',go:'#1D2E73',z:'#5d6680',n:'#c3c9d6'}[est];
-    const tx=(k==='10'?'10':k)+'.00 · '+(i?Math.round(i.a)+'%':'—');const w=tx.length*5.9+14;
-    tags+=`<g><title>${esc(k+'.00 '+NOM[k]+(i?' — real '+pct(i.a)+(i.pp!=null?' · programado '+pct(i.pp):''):' — sin conceptos en el catálogo'))}</title>
+    const tx=(i&&i.l.length===1?i.l[0]+'.00 · ':'')+(i?Math.round(i.a)+'%':'—');const w=tx.length*5.9+14;
+    tags+=`<g><title>${esc(NOM[k]+(i?' ('+i.l.map(p=>p+'.00').join(', ')+') — real '+pct(i.a)+(i.pp!=null?' · programado '+pct(i.pp):''):' — sin partidas de esta área en el catálogo'))}</title>
       <rect x="${x-w/2}" y="${y-10}" width="${w}" height="19" rx="9.5" fill="${bg}" stroke="#fff" stroke-width="1.5"/>
       <text x="${x}" y="${y+3.5}" font-size="10" font-weight="700" fill="#fff" text-anchor="middle">${tx}</text></g>`;});
   const lista=orden.slice().sort((a,b)=>+a-+b).map(k=>{const i=info(k);if(!i)return '';
     const c=i.a>=100?'#1f8a4c':(i.pp!=null&&i.a+0.05<i.pp)?'#E7402B':'#1D2E73';
-    return `<span><i style="background:${c}"></i>${k}.00 ${esc(NOM[k])}</span>`;}).join('');
+    return `<span><i style="background:${c}"></i>${esc(NOM[k])}</span>`;}).join('');
   return `<div class="card est"><h3>Avance de la estación</h3>
     <div class="chart"><svg viewBox="0 0 820 414" role="img" aria-label="Dibujo de la estación coloreado según el avance por área">
       <defs><linearGradient id="cielo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e3ebf8"/><stop offset="1" stop-color="#f7f9fd"/></linearGradient>
