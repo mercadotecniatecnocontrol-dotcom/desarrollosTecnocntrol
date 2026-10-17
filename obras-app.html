@@ -559,14 +559,26 @@ sb().then(c=>{
 }).catch(e=>{console.error(e);pantalla('login');toast('No se pudo cargar Supabase. Revisa tu conexión.',6000);});
 $('lform').onsubmit=async e=>{
   e.preventDefault();const b=$('lbtn');b.disabled=true;b.textContent='Entrando…';$('lerr').hidden=true;
-  try{const c=await sb();const {error}=await c.auth.signInWithPassword({email:$('lemail').value.trim().toLowerCase(),password:$('lpass').value});if(error)throw error;}
+  try{const c=await sb();const email=$('lemail').value.trim().toLowerCase(),password=$('lpass').value;
+    let {error}=await c.auth.signInWithPassword({email,password});
+    if(error&&/invalid login|invalid credentials/i.test(error.message||'')){
+      /* Migración automática: si es su contraseña del portal (Firebase), se crea o
+         actualiza su cuenta de Supabase con esa misma contraseña y se reintenta. */
+      b.textContent='Verificando tu cuenta…';
+      const r=await fetch(SUPABASE_URL+'/functions/v1/auth-migrar',{method:'POST',
+        headers:{'Content-Type':'application/json','apikey':SUPABASE_KEY},body:JSON.stringify({email,password})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){const e=new Error(r.status===401?'Invalid login credentials':(j.error||('Error '+r.status)));throw e;}
+      ({error}=await c.auth.signInWithPassword({email,password}));
+    }
+    if(error)throw error;}
   catch(err){const msg=String(err&&err.message||'');
-    $('lerr').textContent=/invalid login|invalid credentials/i.test(msg)?'Correo o contraseña incorrectos. Si es tu primera vez, pide a Dirección que te asigne una contraseña.':
+    $('lerr').textContent=/invalid login|invalid credentials/i.test(msg)?'Correo o contraseña incorrectos. Usa la misma contraseña del portal.':
       /rate|too many/i.test(msg)?'Demasiados intentos, espera un momento':/fetch|network/i.test(msg)?'Sin conexión a internet':'No se pudo iniciar sesión: '+msg;
     $('lerr').hidden=false;}
   b.disabled=false;b.textContent='Iniciar sesión';
 };
-$('lreset').onclick=()=>toast('Pide a Dirección que te asigne una contraseña nueva (Mi cuenta → Usuarios de la app).',7000);
+$('lreset').onclick=()=>toast('Usa la misma contraseña del portal. Si tampoco la recuerdas, pide a Dirección que te asigne una nueva.',8000);
 
 async function iniciar(){
   pantalla('splash');
