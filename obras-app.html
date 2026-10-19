@@ -1179,7 +1179,9 @@ function tConceptos(){
   if(!S.cat.length){$('view').innerHTML='<div class="card"><p class="help">Sin catálogo cargado.</p></div>';return;}
   S.filtroC=S.filtroC||'todos';
   $('view').innerHTML=`<div class="seg" id="segC">${[['todos','Todos'],['proceso','En proceso'],['vencidos','Vencidos'],['terminados','Terminados']].map(([k,t])=>`<button data-k="${k}" class="${S.filtroC===k?'on':''}">${t}</button>`).join('')}</div>
-    <div class="search">${IC.search}<input id="qc" placeholder="Buscar clave o concepto"></div><div id="clist"></div>`;
+    <div class="search">${IC.search}<input id="qc" placeholder="Buscar clave o concepto"></div><div id="clist"></div>
+    ${puedeAdm()?`<button class="fab" id="fabC" aria-label="Agregar concepto">${IC.plus}</button>`:''}`;
+  if($('fabC'))$('fabC').onclick=()=>formConcepto();
   const pint=()=>{
     const f=norm($('qc').value);const fl=S.filtroC;
     let l=hojas().filter(c=>{const a=avanceC(c);if(fl==='proceso'&&!(a>0&&a<100))return false;if(fl==='vencidos'&&!vencido(c))return false;if(fl==='terminados'&&a<100)return false;
@@ -1196,6 +1198,76 @@ function tConceptos(){
   };
   $('segC').onclick=e=>{const b=e.target.closest('[data-k]');if(!b)return;S.filtroC=b.dataset.k;$('segC').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));pint();};
   $('qc').oninput=pint;pint();
+}
+/* siguiente clave libre dentro de un área: 1.01, 1.02, 1.03… (o AD-1, AD-2… en adicionales) */
+function siguienteClave(p){
+  let max=0;
+  S.cat.forEach(c=>{
+    if(p==='AD'){const m=/^AD-(\d+)$/.exec(c.clave);if(m)max=Math.max(max,+m[1]);}
+    else{const m=new RegExp('^'+p.replace(/\./g,'\\.')+'\\.(\\d+)$').exec(c.clave);if(m)max=Math.max(max,+m[1]);}
+  });
+  return p==='AD'?'AD-'+(max+1):p+'.'+String(max+1).padStart(2,'0');
+}
+/* agregar un concepto nuevo (o editar uno ya existente) */
+function formConcepto(c){
+  const nuevo=!c;const ps=partidas();
+  if(nuevo&&!ps.length){toast('Primero carga el catálogo de la obra');return;}
+  const p0=nuevo?(S.concPartida&&ps.includes(S.concPartida)?S.concPartida:ps[0]):c.partida;
+  const pr=esDir()&&!nuevo?S.precios.get(c.clave):null;
+  form(nuevo?'Nuevo concepto':'Editar '+c.clave,`
+    ${nuevo?`<label for="fc1" style="margin-top:0">Área / partida</label>
+      <select id="fc1">${ps.map(p=>`<option value="${esc(p)}"${p===p0?' selected':''}>${esc(etiquetaPartida(p))}</option>`).join('')}</select>
+      <label for="fc2">Clave del concepto</label><input id="fc2" value="${esc(siguienteClave(p0))}" autocomplete="off">
+      <p class="help" style="margin:6px 0 0">Se propone la siguiente clave libre. La puedes cambiar.</p>`:''}
+    <label for="fc3">Descripción</label><textarea id="fc3" placeholder="Ej: Suministro y colocación de acero de refuerzo en cimentación">${esc(nuevo?'':c.descripcion||'')}</textarea>
+    <div class="row2"><div><label for="fc4">Unidad</label><input id="fc4" value="${esc(nuevo?'':c.unidad||'')}" placeholder="m2, kg, pza, lote"></div>
+    <div><label for="fc5">Cantidad</label><input id="fc5" type="number" step="any" inputmode="decimal" value="${nuevo||c.cantidad==null?'':c.cantidad}"></div></div>
+    ${esDir()?`<label for="fc6">Precio unitario (opcional)</label><input id="fc6" type="number" step="any" inputmode="decimal" value="${pr&&pr.pu!=null?pr.pu:''}">`:''}
+    <div style="height:14px"></div><button class="btn red" id="fcs">${IC.check}${nuevo?'Agregar concepto':'Guardar cambios'}</button>
+    ${!nuevo&&puedeAdm()?`<div style="height:10px"></div><button class="btn ghost" id="fcd">${IC.trash}Eliminar concepto</button>`:''}`);
+  if(nuevo){let manual=false;$('fc2').oninput=()=>{manual=true;};
+    $('fc1').onchange=()=>{S.concPartida=$('fc1').value;if(!manual)$('fc2').value=siguienteClave($('fc1').value);};}
+  $('fcs').onclick=async()=>{
+    const desc=$('fc3').value.replace(/\s+/g,' ').trim();if(!desc){toast('Escribe la descripción');return;}
+    const unidad=$('fc4').value.trim()||null;const cant=$('fc5').value===''?null:Number($('fc5').value);
+    const pu=esDir()&&$('fc6').value!==''?Number($('fc6').value):null;
+    const b=$('fcs');b.disabled=true;
+    try{
+      let fila,clave;
+      if(nuevo){
+        const p=$('fc1').value;clave=normCode($('fc2').value);
+        if(!clave){toast('Escribe la clave');b.disabled=false;return;}
+        if(S.byCode.has(clave)){toast('Ya existe un concepto con la clave '+clave);b.disabled=false;return;}
+        if(isNumCode(clave)&&topOf(clave)!==p){toast('La clave debe empezar con '+p+'. (ej. '+siguienteClave(p)+')');b.disabled=false;return;}
+        const hermano=S.cat.find(x=>x.partida===p&&!x.es_grupo&&x.fecha_inicio_prog)||S.cat.find(x=>x.partida===p&&x.fecha_inicio_prog);
+        const orden=Math.max(0,...S.cat.map(x=>Number(x.orden)||0))+1;
+        fila=await q(x=>x.from('obra_conceptos').insert({obra_id:S.obra.id,clave,partida:p,nivel:isNumCode(clave)?clave.split('.').length:2,descripcion:desc,unidad,cantidad:cant,
+          es_grupo:false,es_equipo:false,es_adicional:!isNumCode(clave),orden,fecha_inicio_prog:hermano?hermano.fecha_inicio_prog:null,fecha_fin_prog:hermano?hermano.fecha_fin_prog:null}).select().single());
+        S.cat.push(fila);S.cat.sort((a,b2)=>cmpCode(a.clave,b2.clave));S.byCode.set(fila.clave,fila);
+      }else{
+        clave=c.clave;
+        fila=await q(x=>x.from('obra_conceptos').update({descripcion:desc,unidad,cantidad:cant}).eq('id',c.id).select().single());Object.assign(c,fila);
+      }
+      if(esDir()&&pu!=null){
+        const imp=cant!=null?cant*pu:null;
+        await q(x=>x.from('obra_precios').upsert({obra_id:S.obra.id,clave,pu,importe:imp,sin_importe:imp==null},{onConflict:'obra_id,clave'}));
+        S.precios.set(clave,{obra_id:S.obra.id,clave,pu,importe:imp,sin_importe:imp==null});
+      }
+      actualizarAvance();cerrarForm();toast(nuevo?'Concepto '+clave+' agregado':'Concepto actualizado');
+      if(nuevo){S.filtroC='todos';setTimeout(()=>verConcepto(clave),60);}else pintar();
+    }catch(e){toast('No se pudo guardar: '+e.message,5000);b.disabled=false;}
+  };
+  if($('fcd'))$('fcd').onclick=async()=>{
+    const n=S.ev.filter(e=>e.concepto_clave===c.clave).length;
+    if(n){toast('Este concepto tiene '+n+' evidencia(s). Elimínalas primero.',5000);return;}
+    if(!confirm('¿Eliminar el concepto '+c.clave+'? No se puede deshacer.'))return;
+    try{
+      await q(x=>x.from('obra_precios').delete().eq('obra_id',S.obra.id).eq('clave',c.clave));
+      await q(x=>x.from('obra_conceptos').delete().eq('id',c.id));
+      S.cat=S.cat.filter(x=>x.id!==c.id);S.byCode.delete(c.clave);S.precios.delete(c.clave);
+      actualizarAvance();cerrarForm();toast('Concepto eliminado');setTimeout(atras,60);
+    }catch(e){toast('No se pudo eliminar: '+e.message,5000);}
+  };
 }
 function verConcepto(k){S.concSel=k;push(vConcepto);}
 function vConcepto(){
@@ -1214,7 +1286,7 @@ function vConcepto(){
       <div class="pl" style="font-size:14px"><span>Fin programado</span><b>${esc(fmtF(c.fecha_fin_prog))}</b></div>
       ${c.fecha_fin_reprog?`<div class="pl" style="font-size:14px"><span>Fin reprogramado</span><b style="color:var(--warn)">${esc(fmtF(c.fecha_fin_reprog))}</b></div>`:''}
       <div class="pl" style="font-size:14px"><span>Fin real</span><b>${esc(fmtF(c.fecha_fin_real))}</b></div>
-      <div class="btns">${puedeCap()&&!c.es_grupo?`<button class="btn sm" id="bRep">${IC.clock}Reprogramar</button>`:''}${puedeAdm()?`<button class="btn ghost sm" id="bFec">Editar fechas</button>`:''}
+      <div class="btns">${puedeCap()&&!c.es_grupo?`<button class="btn sm" id="bRep">${IC.clock}Reprogramar</button>`:''}${puedeAdm()?`<button class="btn ghost sm" id="bFec">Editar fechas</button><button class="btn ghost sm" id="bEdC">Editar concepto</button>`:''}
       ${puedeCap()&&a<100&&!c.es_grupo?`<button class="btn ghost sm" id="bFin">${IC.check}Marcar terminado</button>`:''}</div></div>
     ${puedeCap()?`<button class="btn red" id="bCap">${IC.cam}Capturar evidencia de este concepto</button><div style="height:12px"></div>`:''}
     ${reps.length?`<div class="card"><h3>Reprogramaciones</h3>${reps.map(r=>`<div class="pp"><div class="pn"><span>${esc(fmtF(r.fecha_anterior))} → <b>${esc(fmtF(r.fecha_nueva))}</b></span><span class="v" style="font-weight:600;font-size:13px;color:var(--mute)">${esc(nombreDe(r.creado_por))}</span></div>
@@ -1224,6 +1296,7 @@ function vConcepto(){
   if($('bCap'))$('bCap').onclick=()=>{draft={clave:c.clave,fotos:[],avance:null};S.tab='capturar';atras();};
   if($('bRep'))$('bRep').onclick=()=>formReprogramar(c);
   if($('bFec'))$('bFec').onclick=()=>formFechas(c);
+  if($('bEdC'))$('bEdC').onclick=()=>formConcepto(c);
   if($('bFin'))$('bFin').onclick=async()=>{if(!confirm('¿Marcar '+c.clave+' como terminado al 100%?'))return;
     try{const r=await q(x=>x.from('obra_conceptos').update({avance_pct:100,fecha_fin_real:today()}).eq('id',c.id).select().single());Object.assign(c,r);actualizarAvance();toast('Concepto terminado');pintar();}catch(e){toast(e.message);}};
 }
