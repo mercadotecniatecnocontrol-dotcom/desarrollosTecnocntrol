@@ -15,6 +15,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
 :root{--navy:#1D2E73;--navy2:#14204f;--red:#E7402B;--ink:#1b2133;--mute:#5d6680;--line:#d9dde8;--bg:#eef1f7;--ok:#1f8a4c;--warn:#b7791f;--nav:64px;--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -69,6 +71,7 @@ input:disabled{background:#f3f4f8;color:var(--mute)}
 .btn.red{background:var(--red)}.btn.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}.btn.sm{width:auto;padding:9px 14px;font-size:14px}
 .btn:disabled{background:#b8bfd3;cursor:not-allowed;box-shadow:none}
 .btn svg{width:20px;height:20px}
+a.btn{text-decoration:none;margin-top:10px}
 .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .linkbtn{background:none;border:0;color:var(--navy);font-weight:600;font-size:14px;padding:8px 2px;cursor:pointer;text-decoration:underline}
 .fab{position:fixed;right:18px;bottom:calc(var(--sab) + 22px);width:58px;height:58px;border-radius:50%;background:var(--red);color:#fff;border:0;display:grid;place-items:center;box-shadow:0 8px 20px rgba(231,64,43,.4);cursor:pointer;z-index:9}
@@ -1030,18 +1033,23 @@ function vSemana(){
       <p class="help">${l.length} evidencias en ${new Set(l.map(e=>(S.byCode.get(e.concepto_clave)||{}).partida)).size} partidas. ${r?'Estado: <b>'+esc(r.estado)+'</b>.':''}</p>
       ${fotos.length?`<label style="margin-top:0">Foto de portada</label><div class="covers" id="cov">${fotos.map(f=>`<img data-k="${f.k}" data-p="${esc(f.p)}" class="${S.cover[w]===f.k?'on':''}" alt="">`).join('')}</div>`:''}
       <label for="rf">Fecha de entrega (portada)</label><input type="date" id="rf" value="${iso(new Date(b.getTime()+DAY))}">
-      <div class="btns"><button class="btn red" id="gen" ${l.length?'':'disabled'}>${IC.dl}Descargar PowerPoint</button>
+      <div class="btns"><button class="btn red" id="gen" ${l.length?'':'disabled'}>${IC.dl}Descargar PDF</button>
+      <button class="btn ghost" id="genP" ${l.length?'':'disabled'}>${IC.dl}PowerPoint</button>
       ${puedeAdm()&&l.length?`<button class="btn ghost" id="env">${IC.check}${r&&r.estado==='enviado'?'Enviado':'Marcar como enviado'}</button>`:''}</div></div>
     ${progSem.length?`<div class="card"><h3>Programado para esta semana</h3>${progSem.map(c=>`<div class="pp" data-c="${esc(c.clave)}" style="cursor:pointer"><div class="pn"><span class="code">${esc(c.clave)}</span>${esc(corto(c.descripcion,70))}<span class="v">${pct(avanceC(c))}</span></div><div class="bar"><i class="${vencido(c)?'bad':''}" style="width:${avanceC(c)}%"></i></div></div>`).join('')}</div>`:''}
     <h2>Evidencias</h2><div id="evs">${l.length?'':'<p class="empty">Sin evidencias esta semana.</p>'}</div>`;
   pintarEvidencias($('evs'),l);
   const cov=$('cov');if(cov){cargarFotos(cov);cov.querySelectorAll('img').forEach(im=>im.onclick=()=>{S.cover[w]=im.dataset.k;cov.querySelectorAll('img').forEach(x=>x.classList.toggle('on',x===im));});}
   $('view').querySelectorAll('.pp[data-c]').forEach(d=>d.onclick=()=>verConcepto(d.dataset.c));
-  $('gen').onclick=async()=>{const bt=$('gen');bt.disabled=true;bt.innerHTML='<span class="spin"></span> Generando…';
-    try{await generarPPTX(w,l);await q(c=>c.from('obra_reportes').upsert({obra_id:S.obra.id,semana:w,estado:r&&r.estado==='enviado'?'enviado':'revisado',generado_por:S.me.email,generado_en:new Date().toISOString()},{onConflict:'obra_id,semana'}));
-      S.reportes=await todos('obra_reportes','*',x=>x.eq('obra_id',S.obra.id));}
-    catch(e){console.error(e);toast('Error al generar: '+e.message,5000);}
-    bt.disabled=false;bt.innerHTML=IC.dl+'Descargar PowerPoint';};
+  const generar=async(tipo,bt)=>{const txt=bt.innerHTML;$('gen').disabled=true;$('genP').disabled=true;bt.innerHTML='<span class="spin"></span> Generando…';
+    try{const f=tipo==='pdf'?await generarPDF(w,l):await generarPPTX(w,l);
+      entregarArchivo(f.blob,f.name,tipo);
+      try{await q(c=>c.from('obra_reportes').upsert({obra_id:S.obra.id,semana:w,estado:r&&r.estado==='enviado'?'enviado':'revisado',generado_por:S.me.email,generado_en:new Date().toISOString()},{onConflict:'obra_id,semana'}));
+        S.reportes=await todos('obra_reportes','*',x=>x.eq('obra_id',S.obra.id));}catch(e){console.warn('obra_reportes',e);}}
+    catch(e){console.error(e);form('No se pudo generar',`<p class="help">${esc(e&&e.message||String(e))}</p><p class="help">Toma captura de este mensaje y envíalo a sistemas.</p><button class="btn" id="errX">Cerrar</button>`);$('errX').onclick=cerrarForm;}
+    if($('gen')){$('gen').disabled=false;$('genP').disabled=false;}bt.innerHTML=txt;};
+  $('gen').onclick=()=>generar('pdf',$('gen'));
+  $('genP').onclick=()=>generar('pptx',$('genP'));
   if($('env'))$('env').onclick=async()=>{try{await q(c=>c.from('obra_reportes').upsert({obra_id:S.obra.id,semana:w,estado:'enviado',generado_por:S.me.email},{onConflict:'obra_id,semana'}));
     S.reportes=await todos('obra_reportes','*',x=>x.eq('obra_id',S.obra.id));toast('Semana '+w+' marcada como enviada');pintar();}catch(e){toast(e.message);}};
 }
@@ -1498,9 +1506,93 @@ async function generarPPTX(w,lista){
       footer(s,p1,'');
     }
   }
-  const slug=(S.obra.nombre||'obra').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'');
-  await pres.writeFile({fileName:`Reporte_Semanal_${w}_${slug}.pptx`});
-  toast('Reporte de la semana '+w+' descargado');
+  const blob=await pres.write({outputType:'blob'});
+  return {blob,name:`Reporte_Semanal_${w}_${slugObra()}.pptx`};
+}
+const slugObra=()=>(S.obra.nombre||'obra').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'')||'obra';
+
+/* Entrega el archivo con un botón real de descarga (funciona en Chrome, Safari, iPhone y Android) */
+function entregarArchivo(blob,name,tipo){
+  const url=URL.createObjectURL(blob);const file=(()=>{try{return new File([blob],name,{type:blob.type||(tipo==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.presentationml.presentation')});}catch(e){return null;}})();
+  const share=!!(file&&navigator.canShare&&navigator.canShare({files:[file]}));
+  form('Reporte listo',`<p class="help" style="margin-top:0"><b>${esc(name)}</b> · ${(blob.size/1048576).toFixed(1)} MB</p>
+    <a class="btn red" id="dlA" href="${url}" download="${esc(name)}">${IC.dl}Descargar ${tipo==='pdf'?'PDF':'PowerPoint'}</a>
+    ${tipo==='pdf'?`<a class="btn ghost" href="${url}" target="_blank" rel="noopener">Abrir en otra pestaña</a>`:''}
+    ${share?`<button class="btn ghost" id="shA" style="margin-top:10px">Compartir (WhatsApp, correo…)</button>`:''}
+    <p class="help" style="margin-top:12px">Si no ves la descarga, revisa la carpeta <b>Descargas</b> o el ícono de descargas del navegador.</p>`);
+  $('dlA').onclick=()=>toast('Descargando '+name);
+  if($('shA'))$('shA').onclick=async()=>{try{await navigator.share({files:[file],title:name});}catch(e){if(e.name!=='AbortError')toast('No se pudo compartir');}};
+}
+
+/* Reporte semanal en PDF (mismo diseño que el PowerPoint) */
+async function generarPDF(w,lista){
+  if(!window.jspdf||!window.jspdf.jsPDF)throw new Error('No cargó la librería de PDF. Revisa tu conexión y recarga la página.');
+  const W=13.333,H=7.5,NAVY=[29,46,115],BG=[38,54,110],INK=[27,33,51],RED=[192,0,0];
+  const doc=new window.jspdf.jsPDF({orientation:'landscape',unit:'in',format:[W,H],compress:true});
+  doc.setProperties({title:'Reporte semanal '+w+' · '+(S.obra.nombre||''),author:'Tecnocontrol'});
+  const obra=(S.obra.nombre||'').toUpperCase(),ubi=(S.obra.ubicacion||'').toUpperCase();
+  const l=[...lista].sort((x,y)=>cmpCode(x.concepto_clave,y.concepto_clave)||x.fecha.localeCompare(y.fecha));
+  const cropP=async(p,ar)=>recortar(await fotoDataURL(p),ar);
+  const fill=c=>doc.setFillColor(c[0],c[1],c[2]);const color=c=>doc.setTextColor(c[0],c[1],c[2]);
+  const linea=(t,max)=>{const r=doc.splitTextToSize(String(t||''),max);return r.length>1?r[0].replace(/\s*$/,'…'):(r[0]||'');};
+  let primera=true;const pagina=()=>{if(!primera)doc.addPage([W,H],'landscape');primera=false;};
+  const fondo=c=>{fill(c);doc.rect(0,0,W,H,'F');};
+  const footer=(p1,p2)=>{
+    doc.setFillColor(255,255,255);doc.rect(0,6.62,W,0.88,'F');color(INK);
+    doc.setFont('helvetica','bold');doc.setFontSize(17);doc.text('REPORTE SEMANAL '+w,0.2,6.93);
+    doc.setFontSize(8);doc.text('OBRA:',0.2,7.13);doc.text('UBICACIÓN:',0.2,7.29);
+    doc.setFont('helvetica','normal');doc.text(linea(obra,4.3),0.6,7.13);doc.text(linea(ubi,4.0),0.9,7.29);
+    const lw=2.4;doc.addImage(LOGO,'PNG',(W-lw)/2,6.68,lw,lw*LOGO_AR,'logo','FAST');
+    doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text('PARTIDA:',13.13,6.9,{align:'right'});
+    doc.setFont('helvetica','normal');doc.text(linea(p1,4.6),13.13,7.08,{align:'right'});if(p2)doc.text(linea(p2,4.6),13.13,7.25,{align:'right'});
+  };
+  // portada
+  const [a,b]=rango(w);pagina();fondo(NAVY);
+  const ck=((S.cover||{})[w]||'').split(':');const cev=l.find(v=>v.id===ck[0])||l[0];const cf=cev&&cev.fotos&&cev.fotos[+ck[1]||0];
+  if(cf){doc.addImage(await cropP(cf,W/H),'JPEG',0,0,W,H);doc.saveGraphicsState();doc.setGState(new doc.GState({opacity:0.55}));doc.setFillColor(0,0,0);doc.rect(0,0,W,H,'F');doc.restoreGraphicsState();}
+  doc.setFillColor(255,255,255);doc.roundedRect(0.35,0.35,4.3,1.45,0.12,0.12,'F');
+  doc.addImage(LOGO,'PNG',0.55,0.55,3.9,3.9*LOGO_AR,'logo','FAST');
+  doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(40);
+  doc.text('REPORTE DE',13.0,0.95,{align:'right'});doc.text('AVANCE SEMANA '+w,13.0,1.6,{align:'right'});
+  doc.setFontSize(13);const ol=doc.splitTextToSize(obra,6.4);doc.text(ol,13.0,2.3,{align:'right'});
+  doc.setFont('helvetica','normal');doc.text(doc.splitTextToSize(ubi,6.4).slice(0,3),13.0,2.3+ol.length*0.22,{align:'right'});
+  const fe=$('rf')&&$('rf').value?pd($('rf').value):new Date(b.getTime()+DAY);
+  doc.setFont('helvetica','bold');doc.setFontSize(20);doc.text(fmtD(fe),W/2,6.85,{align:'center'});
+  doc.setFont('helvetica','normal');doc.setFontSize(12);doc.text('Periodo: '+fmtS(a)+' al '+fmtS(b)+' de '+b.getFullYear(),W/2,7.17,{align:'center'});
+
+  // por partida
+  const parOf=v=>(S.byCode.get(v.concepto_clave)||{}).partida||String(v.concepto_clave).split('.')[0];
+  const tops=[...new Set(l.map(parOf))].sort(cmpCode);
+  for(const t of tops){
+    const evs=l.filter(v=>parOf(v)===t);const p1=etiquetaPartida(t);
+    for(const v of evs){
+      const g=grupoDe(v.concepto_clave);const p2=g&&g!==v.concepto_clave?nombreC(g):'';
+      pagina();fondo(BG);
+      doc.setFillColor(255,255,255);doc.setDrawColor(RED[0],RED[1],RED[2]);doc.setLineWidth(0.021);doc.roundedRect(1.0,0.15,11.33,0.62,0.1,0.1,'FD');
+      const titulo=String(v.descripcion||(S.byCode.get(v.concepto_clave)||{}).descripcion||v.concepto_clave||'');
+      let fs=15,ln;doc.setFont('helvetica','normal');
+      do{doc.setFontSize(fs);ln=doc.splitTextToSize(titulo,11.0);fs-=0.5;}while(ln.length*fs*1.15/72>0.58&&fs>7);
+      color(INK);const lh=(fs+0.5)*1.15/72;doc.text(ln,W/2,0.46-((ln.length-1)*lh)/2,{align:'center',baseline:'middle',lineHeightFactor:1.15});
+      const fotos=v.fotos||[];const k=fotos.length||1,gap=0.15,X0=0.2,TW=12.93,Y=0.9,FH=5.6;const pw=(TW-gap*(k-1))/k;
+      for(let i=0;i<fotos.length;i++)doc.addImage(await cropP(fotos[i],pw/FH),'JPEG',X0+i*(pw+gap),Y,pw,FH);
+      footer(p1,p2);
+    }
+    // resumen de conceptos de la partida
+    const codes=[...new Set(evs.map(v=>v.concepto_clave))].sort(cmpCode);
+    const rowsAll=codes.map(c=>{const x=S.byCode.get(c)||{};const cs=evs.filter(v=>v.concepto_clave===c&&v.cantidad!=null);const cant=cs.reduce((s,v)=>s+Number(v.cantidad),0);
+      return [c,corto(x.descripcion,150)||c,x.unidad||'',cs.length?num(cant):'—',x.clave?pct(avanceC(x)):'—'];});
+    for(let i=0;i<rowsAll.length;i+=9){
+      pagina();fondo(BG);doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(20);
+      doc.text('Conceptos con avance en la semana'+(rowsAll.length>9?' ('+(i/9+1)+')':''),0.4,0.62);
+      doc.autoTable({head:[['Clave','Concepto','Unidad','Cantidad semana','Avance']],body:rowsAll.slice(i,i+9),startY:0.95,
+        margin:{left:0.4,right:0.4,bottom:0.95},tableWidth:12.53,rowPageBreak:'avoid',
+        styles:{font:'helvetica',fontSize:11,cellPadding:0.06,textColor:INK,fillColor:[255,255,255],lineColor:[201,206,220],lineWidth:0.007,valign:'middle'},
+        headStyles:{fillColor:NAVY,textColor:[255,255,255],fontStyle:'bold'},
+        columnStyles:{0:{cellWidth:1.2},1:{cellWidth:8.03},2:{cellWidth:0.9},3:{cellWidth:1.4},4:{cellWidth:1.0}}});
+      footer(p1,'');
+    }
+  }
+  return {blob:doc.output('blob'),name:`Reporte_Semanal_${w}_${slugObra()}.pdf`};
 }
 
 /* ─────────── CATÁLOGO Y PROGRAMA (importar) ─────────── */
